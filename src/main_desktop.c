@@ -1,4 +1,5 @@
 
+#include "game/common.h"
 #ifdef PLATFORM_DESKTOP
 	#include <raylib.h>
 	#include <dlfcn.h>
@@ -45,10 +46,11 @@ int main(void) {
 	SetTargetFPS(60);
 
 	GameContext ctx = {
-		.memory_size = 4 * 1024 * 1024,
-		.memory = calloc(1, 4 * 1024 * 1024),
+		.memory_size = MiB(8),
+		.memory = calloc(1, MiB(8)),
 	};
-	if (game_reload() == false) return -1;
+	if (game_reload() == false)
+		return -1;
 
 	while (!WindowShouldClose()) {
 		uint64_t mtime = GetFileModTime("libgame.so");

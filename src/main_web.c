@@ -1,4 +1,5 @@
 
+#include "game/common.h"
 #include <game_interface.h>
 static GameContext context;
 
@@ -16,7 +17,7 @@ static void loop(void) {
 }
 
 int main(void) {
-	ctx.memory_size = 4 * 1024 * 1024;
+	ctx.memory_size = MiB(8);
 	ctx.memory = calloc(1, ctx.memory_size);
 	InitWindow(800, 450, "game");
 	emscripten_set_main_loop(loop, 0, 1);

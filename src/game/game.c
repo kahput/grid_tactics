@@ -24,7 +24,7 @@ void *allocate(ArenaAllocator *allocator, uint64_t size) {
 #define arena_push_count(arena, count, T) allocate((arena), sizeof(T) * (count))
 
 #define BLOCK_SIZE 4
-#define CHUNK_SIZE 16
+#define GRID_SIZE 16
 
 typedef struct {
 	ArenaAllocator arena;
@@ -33,9 +33,13 @@ typedef struct {
 	Camera3D camera;
 
 	Texture2D texture;
-	Model custom_quad;
 
+	Model selection;
+	Model map;
+
+	Vector3 selection_position;
 	bool selected;
+
 	bool initialized;
 } GameState;
 
@@ -71,6 +75,8 @@ Rectangle sprite_to_uv_rect[SPRITE_MAX] = {
 	[SPRITE_DUNGEON_FLOOR] = { 16.0f, 64.f, 16.0f, 16.0f },
 	[SPRITE_DUNGEON_WALL] = { 64.0f, 48.0f, 16.0f, 16.0f },
 };
+
+typedef Mesh GridBatch;
 
 void push_quad(Mesh *mesh, float x, float y, float z, SpriteType type, CubeFace face) {
 	float half_size = BLOCK_SIZE * 0.5f;
@@ -145,6 +151,10 @@ void push_cube(Mesh *mesh, float x, float y, float z, BlockType type) {
 	push_quad(mesh, x, y, z, SPRITE_DUNGEON_WALL, CUBE_FACE_BACK);
 }
 
+void push_cube3(Mesh *mesh, float32x3 position, BlockType type) {
+	push_cube(mesh, position.x, position.y, position.z, type);
+}
+
 void update_and_draw(GameContext *context) {
 	GameState *state = (GameState *)context->memory;
 
@@ -161,18 +171,41 @@ void update_and_draw(GameContext *context) {
 
 		state->texture = LoadTexture("assets/Tilemap/tilemap_packed.png");
 
-		Mesh custom = { 0 };
+		Mesh map_mesh = { 0 };
 
-		custom.vertices = arena_push_count(&state->arena, 36, float32x3);
-		custom.normals = arena_push_count(&state->arena, 36, float32x3);
-		custom.texcoords = arena_push_count(&state->arena, 36, float32x2);
+		uint32_t max_vertices = GRID_SIZE * GRID_SIZE * GRID_SIZE * 36;
+		map_mesh.vertices = arena_push_count(&state->arena, max_vertices, float32x3);
+		map_mesh.normals = arena_push_count(&state->arena, max_vertices, float32x3);
+		map_mesh.texcoords = arena_push_count(&state->arena, max_vertices, float32x2);
 
-		push_cube(&custom, 0.0f, 10.0f, 0.0f, BLOCK_TYPE_DUNGEON_WALL);
+		for (uint32_t index = 0; index < GRID_SIZE * GRID_SIZE; ++index) {
+			uint32_t x = index % GRID_SIZE;
+			uint32_t z = index / GRID_SIZE;
 
-		UploadMesh(&custom, true);
-		state->custom_quad = LoadModelFromMesh(custom);
+			float grid_half = GRID_SIZE * 0.5f;
+			float block_half = BLOCK_SIZE * 0.5f;
 
-		state->custom_quad.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = state->texture;
+			float32x3 cube_pos = {
+				(x - grid_half) * BLOCK_SIZE, -block_half, (z - grid_half) * BLOCK_SIZE
+			};
+			cube_pos.x += block_half;
+			cube_pos.z += block_half;
+
+			push_cube3(&map_mesh, cube_pos, BLOCK_TYPE_DUNGEON_WALL);
+
+			if (x == 0 || z == 0) {
+				cube_pos.y += BLOCK_SIZE;
+				push_cube3(&map_mesh, cube_pos, BLOCK_TYPE_DUNGEON_WALL);
+				cube_pos.y += BLOCK_SIZE;
+				push_cube3(&map_mesh, cube_pos, BLOCK_TYPE_DUNGEON_WALL);
+			}
+		}
+
+		UploadMesh(&map_mesh, true);
+		state->map = LoadModelFromMesh(map_mesh);
+		state->map.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = state->texture;
+
+		state->selection = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
 		state->initialized = true;
 	}
@@ -188,21 +221,41 @@ void update_and_draw(GameContext *context) {
 
 	BeginMode3D(state->camera);
 
-	DrawGrid(10, 5.0f);
+	DrawGrid(16, BLOCK_SIZE);
 
 	float time = GetTime();
+
+	DrawModel(state->map, (Vector3){ 0 }, 1.0f, WHITE);
 
 	if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
 		Ray ray = GetScreenToWorldRay(GetMousePosition(), state->camera);
 
+		int32_t grid_half = GRID_SIZE * 0.5f;
+		int32_t block_half = BLOCK_SIZE * 0.5f;
+
 		BoundingBox box = {
-			.min = { -((CHUNK_SIZE * 0.5f) * BLOCK_SIZE), 0.0f, -((CHUNK_SIZE * 0.5f) * BLOCK_SIZE) },
-			.max = { (CHUNK_SIZE * 0.5f) * BLOCK_SIZE, BLOCK_SIZE, (CHUNK_SIZE * 0.5f) * BLOCK_SIZE }
+			.min = { -grid_half * BLOCK_SIZE, -BLOCK_SIZE, -grid_half * BLOCK_SIZE },
+			.max = { grid_half * BLOCK_SIZE, 0.0f, grid_half * BLOCK_SIZE }
 		};
 		RayCollision collision = GetRayCollisionBox(ray, box);
 
 		if (collision.hit) {
 			TraceLog(LOG_INFO, "Hit");
+
+			int32_t grid_position[3] = {
+				CLAMP(floorf(collision.point.x / BLOCK_SIZE), -grid_half + 1, grid_half - 1),
+				collision.point.y / BLOCK_SIZE,
+				CLAMP(floorf(collision.point.z / BLOCK_SIZE), -grid_half + 1, grid_half - 1),
+			};
+
+			TraceLog(LOG_INFO, "Grid position of hit: %d, %d, %d", grid_position[0], grid_position[1], grid_position[2]);
+
+			state->selection_position = (Vector3){
+				.x = grid_position[0] * BLOCK_SIZE + block_half,
+				.y = grid_position[1] * BLOCK_SIZE - block_half,
+				.z = grid_position[2] * BLOCK_SIZE + block_half,
+			};
+
 			state->selected = true;
 		} else {
 			TraceLog(LOG_INFO, "No Hit");
@@ -210,27 +263,32 @@ void update_and_draw(GameContext *context) {
 		}
 	}
 
-	for (uint32_t index = 0; index < CHUNK_SIZE * CHUNK_SIZE; ++index) {
-		uint32_t x = index % CHUNK_SIZE;
-		uint32_t z = index / CHUNK_SIZE;
+	if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
+		state->selected = false;
+	}
 
-		float chunk_half = CHUNK_SIZE * 0.5f;
-		float block_half = BLOCK_SIZE * 0.5f;
+	if (state->selected) {
+		Vector3 pos = state->selection_position;
 
-		Vector3 cube_pos = {
-			(x - chunk_half) * BLOCK_SIZE, -block_half, (z - chunk_half) * BLOCK_SIZE
-		};
-		cube_pos.x += block_half;
-		cube_pos.z += block_half;
+		// Move the position to sit perfectly on top of the block.
+		// BLOCK_SIZE * 0.5f brings it to the surface.
+		// BLOCK_SIZE * 0.05f accounts for half of the selection mesh's Y height (0.1 / 2) so it doesn't clip into the floor.
+		pos.y += (BLOCK_SIZE * 0.5f) + (BLOCK_SIZE * 0.05f);
 
-		DrawModel(state->custom_quad, cube_pos, 1.0f, WHITE);
+		float scale = BLOCK_SIZE - 1.0f;
 
-		if (x == 0 || z == 0) {
-			cube_pos.y += BLOCK_SIZE;
-			DrawModel(state->custom_quad, cube_pos, 1.0f, WHITE);
-			cube_pos.y += BLOCK_SIZE;
-			DrawModel(state->custom_quad, cube_pos, 1.0f, WHITE);
-		}
+		Vector3 mesh_scale = Vector3Scale((Vector3){ 0.1f, 0.05f, 0.3f }, BLOCK_SIZE);
+
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, WHITE);
+
+		/* DrawCube(state->selection_position, BLOCK_SIZE, BLOCK_SIZE + 1, BLOCK_SIZE, ORANGE); */
 	}
 
 	EndMode3D();
