@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Asteroids vs Pong</title>
+    
+    <style>
+        /* 1. Reset default browser margins and set height to 100% */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* Prevents scrollbars */
+            background-color: #080808; 
+        }
+
+        /* 2. Use Flexbox to center the content */
+        body {
+            display: flex;
+            justify-content: center; /* Horizontally center */
+            align-items: center;     /* Vertically center */
+        }
+
+        /* 3. Style the canvas */
+        canvas {
+            display: block;
+            outline: none; /* Removes the blue selection border on click */
+            box-shadow: 0 0 20px rgba(0,0,0,0.5); /* Optional: adds a subtle shadow */
+        }
+    </style>
+</head>
+
+<body>
+
+    <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+
+    <script type='text/javascript'>
+        var Module = {
+            canvas: (function() { return document.getElementById('canvas'); })()
+        };
+    </script>
+    
+    <script src="index.js"></script>
+    
+</body>
+
+</html>
+	

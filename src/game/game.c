@@ -32,13 +32,20 @@ typedef struct {
 
 	Camera3D camera;
 
-	Texture2D texture;
+	Texture2D atlas;
 
 	Model selection;
 	Model map;
 
 	Vector3 selection_position;
 	bool selected;
+
+	Vector3 player_position;
+
+	struct {
+		Vector3 start, target;
+		float duration, t;
+	} move_animation;
 
 	bool initialized;
 } GameState;
@@ -57,6 +64,7 @@ typedef enum {
 typedef enum {
 	SPRITE_DUNGEON_FLOOR,
 	SPRITE_DUNGEON_WALL,
+	SPRITE_PLAYER,
 
 	SPRITE_MAX,
 } SpriteType;
@@ -74,6 +82,7 @@ typedef enum {
 Rectangle sprite_to_uv_rect[SPRITE_MAX] = {
 	[SPRITE_DUNGEON_FLOOR] = { 16.0f, 64.f, 16.0f, 16.0f },
 	[SPRITE_DUNGEON_WALL] = { 64.0f, 48.0f, 16.0f, 16.0f },
+	[SPRITE_PLAYER] = { 16.0f, 112.0f, 16.0f, 16.0f },
 };
 
 typedef Mesh GridBatch;
@@ -169,7 +178,7 @@ void update_and_draw(GameContext *context) {
 		state->camera.target = (Vector3){ 0.0f, 0.0f, 0.0f }; // Camera looking at point
 		state->camera.up = (Vector3){ 0.0f, 1.0f, 0.0f }; // Camera up vector (rotation towards target)
 
-		state->texture = LoadTexture("assets/Tilemap/tilemap_packed.png");
+		state->atlas = LoadTexture("assets/Tilemap/tilemap_packed.png");
 
 		Mesh map_mesh = { 0 };
 
@@ -203,7 +212,7 @@ void update_and_draw(GameContext *context) {
 
 		UploadMesh(&map_mesh, true);
 		state->map = LoadModelFromMesh(map_mesh);
-		state->map.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = state->texture;
+		state->map.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = state->atlas;
 
 		state->selection = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
 
@@ -227,7 +236,7 @@ void update_and_draw(GameContext *context) {
 
 	DrawModel(state->map, (Vector3){ 0 }, 1.0f, WHITE);
 
-	if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+	if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && state->move_animation.duration == 0.0f) {
 		Ray ray = GetScreenToWorldRay(GetMousePosition(), state->camera);
 
 		int32_t grid_half = GRID_SIZE * 0.5f;
@@ -256,6 +265,14 @@ void update_and_draw(GameContext *context) {
 				.z = grid_position[2] * BLOCK_SIZE + block_half,
 			};
 
+			state->move_animation.start = state->player_position;
+			state->move_animation.target = state->selection_position;
+			state->move_animation.target.y += block_half;
+
+			float distance = Vector3Length(Vector3Subtract(state->move_animation.target, state->move_animation.start));
+			state->move_animation.duration = distance / 16.0f;
+			state->move_animation.t = 0.0f;
+
 			state->selected = true;
 		} else {
 			TraceLog(LOG_INFO, "No Hit");
@@ -270,25 +287,37 @@ void update_and_draw(GameContext *context) {
 	if (state->selected) {
 		Vector3 pos = state->selection_position;
 
-		// Move the position to sit perfectly on top of the block.
-		// BLOCK_SIZE * 0.5f brings it to the surface.
-		// BLOCK_SIZE * 0.05f accounts for half of the selection mesh's Y height (0.1 / 2) so it doesn't clip into the floor.
 		pos.y += (BLOCK_SIZE * 0.5f) + (BLOCK_SIZE * 0.05f);
 
 		float scale = BLOCK_SIZE - 1.0f;
 
 		Vector3 mesh_scale = Vector3Scale((Vector3){ 0.1f, 0.05f, 0.3f }, BLOCK_SIZE);
+		Color selection_color = WHITE;
 
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, WHITE);
-		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, WHITE);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color);
+		DrawModelEx(state->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color);
+	}
 
-		/* DrawCube(state->selection_position, BLOCK_SIZE, BLOCK_SIZE + 1, BLOCK_SIZE, ORANGE); */
+	if (state->move_animation.duration > 0.0f) {
+		state->move_animation.t += GetFrameTime();
+
+		float t = state->move_animation.t / state->move_animation.duration;
+		if (t >= 1.0f) {
+			t = 1.0f;
+			state->move_animation.duration = 0.0f;
+		}
+
+		state->player_position = Vector3Lerp(state->move_animation.start, state->move_animation.target, t);
+		DrawBillboardPro(state->camera, state->atlas, sprite_to_uv_rect[SPRITE_PLAYER], state->player_position, state->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
+
+	} else {
+		DrawBillboardPro(state->camera, state->atlas, sprite_to_uv_rect[SPRITE_PLAYER], state->player_position, state->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
 	}
 
 	EndMode3D();
@@ -303,5 +332,5 @@ void unload(GameContext *context) {
 
 	TraceLog(LOG_INFO, "Unloading assets");
 
-	UnloadTexture(state->texture);
+	UnloadTexture(state->atlas);
 }
