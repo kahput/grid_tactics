@@ -1,0 +1,83 @@
+# Ignore build directories
+/build/
+/bin/
+/obj/
+/out/
+/vendor/
+/docs/
+**/shaders/
+
+
+# Ignore CMake files (if using CMake)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CMakeLists.txt.user
+CMakeLists.txt.cache
+CMakeLists.txt.local
+compile_commands.json
+*.ninja*
+**/.ninja*
+
+# Ignore IDE-specific files (common for popular IDEs)
+.vscode/
+.idea/
+*.pro.user
+*.pro.user.*
+*.qmake.cache
+*.qmake.stash
+*.user
+*.userprefs
+*.clangd
+*.ignore
+*.cache
+
+# Ignore temporary files created by editors
+*~
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*.orig
+
+# Ignore system files
+.DS_Store           # macOS
+Thumbs.db           # Windows
+
+# Ignore compiled object files and libraries
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exp
+*.pch
+*.pdb
+*.idb
+*.ilk
+
+# Ignore executables
+*.out
+*.exe
+
+# Ignore compiler-generated files
+*.d
+*.dep
+*.dSYM/
+
+# Ignore dependency files
+*.d
+
+# Ignore coverage reports (if using coverage tools like gcov or lcov)
+*.gcno
+*.gcda
+*.lcov
+coverage/
+
+# Ignore package manager files (if using package managers like vcpkg or conan)
+.vcpkg/
+conan.lock
+conanbuildinfo.cmake
+conanbuildinfo.txt
