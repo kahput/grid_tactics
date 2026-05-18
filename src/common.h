@@ -6,6 +6,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+	#define alignof(type) _Alignof(type)
+#elif defined(__GNUC__) || defined(__clang__)
+	#define alignof(type) __alignof__(type)
+#elif defined(_MSC_VER)
+	#define alignof(type) __alignof(type)
+#else
+	#define alignof(T) (size_t)(&((struct {  char byte; T offset; } *)0)->offset)
+#endif
+
 #define sizeof_member(type, member) (sizeof(((type *)0)->member))
 #define countof(array) (sizeof(array) / sizeof((array)[0]))
 #define indexof(array, ptr) (uint32_t)(ptr - array)
@@ -14,6 +24,9 @@
 #define memory_copy(dst, src, size) memcpy((dst), (src), (size))
 #define memory_set(dst, byte, size) memset((dst), (byte), (size))
 #define memory_compare(a, b, size) memcmp((a), (b), (size))
+
+#define string_length(str) (strlen((str)))
+#define string_size(str) (strlen((str)) + 1)
 
 #define memory_copy_struct(d, s) memory_copy((d), (s), sizeof(*(d)))
 #define memory_copy_array(d, s) memory_copy((d), (s), sizeof(d))
@@ -30,6 +43,7 @@
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define SIGN(v) ((v) > 0 ? 1 : 0)
 
 #define CLAMP(value, low, high) ((value) < (low) ? (low) : ((value) > (high) ? (high) : (value)))
 
@@ -71,7 +85,7 @@ static inline uint64_t hash64_combine(uint64_t lhs, uint64_t rhs) {
 
 #define hash_struct(s) hash64(&(s), sizeof((s)))
 #define hash_array(array) hash64((array), sizeof((array)))
-#define hash_count(memory, count) hash64((memory), sizeof(*(memory)) * (count))
+#define hash_count(memory, count) hash64((void *)(memory), sizeof(*(memory)) * (count))
 
 // Types
 // clang-format off

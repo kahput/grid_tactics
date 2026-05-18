@@ -46,6 +46,8 @@ if(${PLATFORM} STREQUAL "Web")
     endif()
 
 else()
+    include(FetchContent)
+
     message(STATUS "Building for Desktop...")
     if(MSVC)
         set(CONFIG $<CONFIG>)
@@ -60,22 +62,14 @@ else()
     target_include_directories(${PROJECT_NAME} PRIVATE "./src/")
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -pedantic -Wextra -Werror -Wno-unused-parameter -Wno-unused-variable)
 
-    set(RAYLIB_VERSION 5.5)
-    find_package(raylib ${RAYLIB_VERSION} QUIET)
+    FetchContent_Declare(
+        raylib
+        DOWNLOAD_EXTRACT_TIMESTAMP OFF
+        URL https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_VERSION}.tar.gz
+        FIND_PACKAGE_ARGS
+    )
 
-    if (NOT raylib_FOUND)
-        include(FetchContent)
-        FetchContent_Declare(
-            raylib
-            DOWNLOAD_EXTRACT_TIMESTAMP OFF
-            URL https://github.com/raysan5/raylib/archive/refs/tags/${RAYLIB_VERSION}.tar.gz
-        )
-        FetchContent_GetProperties(raylib)
-        if (NOT raylib_POPULATED)
-            set(FETCHCONTENT_QUIET NO)
-            FetchContent_MakeAvailable(raylib)
-        endif()
-    endif()
+    FetchContent_MakeAvailable(raylib)
     
     target_link_libraries(${PROJECT_NAME} PRIVATE dl raylib m )
 

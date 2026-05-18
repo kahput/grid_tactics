@@ -1,5 +1,4 @@
-
-#include "game/common.h"
+#include "common.h"
 #include <game_interface.h>
 static GameContext context;
 
@@ -19,7 +18,10 @@ static void loop(void) {
 int main(void) {
 	ctx.memory_size = MiB(8);
 	ctx.memory = calloc(1, ctx.memory_size);
-	InitWindow(1920, 1080, "game");
+	ctx.transient_memory_size = MiB(256);
+	ctx.transient_memory = calloc(1, ctx.memory_size);
+	InitWindow(1280, 720, "game");
+	InitAudioDevice();
 	emscripten_set_main_loop(loop, 0, 1);
 }
 #endif

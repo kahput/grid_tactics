@@ -1,5 +1,5 @@
 
-#include "game/common.h"
+#include "common.h"
 #ifdef PLATFORM_DESKTOP
 	#include <raylib.h>
 	#include <dlfcn.h>
@@ -42,12 +42,15 @@ static bool game_reload(void) {
 
 int main(void) {
 	SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-	InitWindow(800, 450, "game");
+	InitWindow(1280, 720, "game");
+	InitAudioDevice();
 	SetTargetFPS(60);
 
 	GameContext ctx = {
-		.memory_size = MiB(8),
-		.memory = calloc(1, MiB(8)),
+		.memory_size = MiB(4),
+		.memory = calloc(1, MiB(4)),
+		.transient_memory_size = MiB(256),
+		.transient_memory = calloc(1, MiB(256)),
 	};
 	if (game_reload() == false)
 		return -1;
@@ -56,6 +59,8 @@ int main(void) {
 		uint64_t mtime = GetFileModTime("libgame.so");
 		if (mtime != game_last_write) {
 			nanosleep(&(struct timespec){ .tv_nsec = 100000000 }, NULL);
+			unload(&ctx);
+			memory_zero(ctx.transient_memory, ctx.transient_memory_size);
 			game_reload();
 		}
 		if (update_and_draw)
