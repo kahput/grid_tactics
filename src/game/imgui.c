@@ -106,9 +106,13 @@ void imgui_frame_end(void) {
 
 		uint32_t main = parent->orientation;
 		uint32_t cross = !parent->orientation;
+		ASSERT(parent->anchor >= IMGUI_ANCHOR_TOPLEFT && parent->anchor < IMGUI_ANCHOR_MAX);
+		uint32_t align_x = (parent->anchor % 3);
+		uint32_t align_y = (parent->anchor / 3);
+
 		float scalar[AXIS2_MAX] = {
-			parent->align[AXIS2_X] ? parent->align[AXIS2_X] == UI_ALIGN_RIGHT ? 1.0f : 0.5f : 0.0f,
-			parent->align[AXIS2_Y] ? parent->align[AXIS2_Y] == UI_ALIGN_BOTTOM ? 1.0f : 0.5f : 0.0f,
+			align_x * 0.5f,
+			align_y * 0.5f,
 		};
 		widget->offset[main] += remaining[main] * scalar[main];
 		widget->offset[cross] += (remaining[cross] - widget->size[cross]) * scalar[cross];
@@ -252,11 +256,8 @@ void imgui_orientation(Axis2 axis) {
 	widget->orientation = axis;
 }
 
-void imgui_align_x(UIAlign align) {
-	widget_peek()->align[AXIS2_X] = align;
-}
-void imgui_align_y(UIAlign align) {
-	widget_peek()->align[AXIS2_Y] = align;
+void imgui_anchor(ImguiAnchor anchor) {
+	widget_peek()->anchor = anchor;
 }
 
 void imgui_padding(uint16_t left, uint16_t right, uint16_t top, uint16_t bottom) {
@@ -456,7 +457,7 @@ bool imgui_scrollbar(uint64_t id, float *value, float min, float max) {
 		Color thumb_color = rgb(30, 30, 30);
 
 		/* imgui_background_color(track_color); */
-		imgui_align_x(UI_ALIGN_RIGHT);
+		imgui_anchor(IMGUI_ANCHOR_TOPRIGHT);
 
 		float t_slider = CLAMP(*value, min, max) / max;
 
@@ -507,8 +508,8 @@ UIInteraction imgui_interact(uint64_t id, Rectangle area, UIWidgetFlags flags) {
 	if (cache) {
 		interact.hover_entered = cache->hovered == false && hovered;
 
-        cache->hovered = interact.hovering;
-    }
+		cache->hovered = interact.hovering;
+	}
 
 	if (context->active_item == id)
 		interact.held = true;

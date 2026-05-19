@@ -44,6 +44,27 @@ typedef enum {
 	GAME_STATE_PLAY,
 } GameScene;
 
+typedef enum {
+	ENTITY_TRAIT_MOVABLE = 0x1,
+	ENTITY_TRAIT_DRAGGABLE = 0x2,
+	ENTITY_TRAIT_BILLBOARD = 0x4,
+} EntityTraitFlags;
+
+typedef struct {
+	EntityTraitFlags trait;
+
+	Vector3 position;
+
+	bool moving;
+	struct {
+		Vector3 start, target;
+		float duration, t;
+	} move_animation;
+
+	uint32_t next_tether_target, prev_tether_target;
+} Entity;
+
+#define MAX_ENTITIES 8
 typedef struct {
 	ArenaAllocator arena;
 	ArenaAllocator frame;
@@ -51,14 +72,13 @@ typedef struct {
 	Model selection;
 
 	Vector3 selection_position;
-	bool selected;
 
-	Vector3 player_position;
+	uint32_t active_entity;
+	uint32_t hot_entity;
+	uint32_t last_moved;
 
-	struct {
-		Vector3 start, target;
-		float duration, t;
-	} move_animation;
+	Entity entities[MAX_ENTITIES];
+	uint32_t entity_count;
 
 	GameScene state;
 	bool initialized;
@@ -80,7 +100,11 @@ typedef struct {
 
 	UIContext gui_state;
 
+	// assets
 	Sound sound_effects[SOUND_EFFECT_MAX];
+	Shader billboard_shader;
+
+	// :init
 
 	bool initialized;
 } TransientState;
@@ -113,161 +137,130 @@ uint32_t map_data[GRID_SIZE * GRID_SIZE] = {
 void game_state_menu(void);
 void game_state_play(void);
 
+#define GET_MACRO3(_1, _2, _3, NAME, ...) NAME
+
+#define vec3_3(x, y, z) \
+	(Vector3) { (x), (y), (z) }
+#define vec3_2(x, y) vec3_3(x, y, 0)
+#define vec3_1(v) vec3_3(v, v, v)
+
+#define vec3(...) GET_MACRO3(__VA_ARGS__, vec3_3, vec3_2, vec3_1, _)(__VA_ARGS__)
+
+static inline BoundingBox box_from_size(float width, float height, float depth) {
+	return (BoundingBox){ { -(width * 0.5f), -(height * 0.5f), -(depth * 0.5f) }, { (width * 0.5f), (height * 0.5f), (depth * 0.5f) } };
+}
+static inline BoundingBox box_offset(BoundingBox box, float x, float y, float z) {
+	BoundingBox result = { 0 };
+	result.min.x = box.min.x + x;
+	result.min.y = box.min.y + y;
+	result.min.z = box.min.z + z;
+
+	result.max.x = box.max.x + x;
+	result.max.y = box.max.y + y;
+	result.max.z = box.max.z + z;
+
+	return result;
+}
+
+static inline BoundingBox box_offset3v(BoundingBox box, Vector3 offset) {
+	return box_offset(box, offset.x, offset.y, offset.z);
+}
+
 int32x3 world_to_grid(Vector3 point) {
 	float grid_half = GRID_SIZE * 0.5f;
 
 	int32x3 result = {
-		CLAMP(floorf(point.x / BLOCK_SIZE), -grid_half, grid_half - 1),
-		point.y / BLOCK_SIZE,
-		CLAMP(floorf(point.z / BLOCK_SIZE), -grid_half, grid_half - 1),
+		CLAMP(point.x / BLOCK_SIZE, -grid_half, grid_half - 1),
+		CLAMP(point.y / BLOCK_SIZE, 0, 1),
+		CLAMP(point.z / BLOCK_SIZE, -grid_half, grid_half - 1),
 	};
 
 	return result;
 }
 
-typedef struct AStarNode AStarNode;
-struct AStarNode {
-	int32x3 grid_position;
-	int32_t g_score, h_score;
+Vector3 grid_to_world(int32_t x, int32_t y, int32_t z) {
+	float grid_half = GRID_SIZE * 0.5f;
+	float block_half = BLOCK_SIZE * 0.5f;
 
-	AStarNode *next, *prev;
-};
+	Vector3 result = {
+		.x = CLAMP(x * BLOCK_SIZE + block_half, -grid_half * BLOCK_SIZE, grid_half * BLOCK_SIZE),
+		.y = CLAMP(y * BLOCK_SIZE + block_half, 0, 1),
+		.z = CLAMP(z * BLOCK_SIZE + block_half, -grid_half * BLOCK_SIZE, grid_half * BLOCK_SIZE),
+	};
 
-static inline int32_t manhatten_distance(int32x3 start, int32x3 target) {
-	return abs(start.x - target.x) + abs(start.y - target.y) + abs(start.z - target.z);
+	return result;
 }
 
-#define dll_push_back(head, element) (                             \
-	(head) == 0                                                    \
-		? ((head) = (element)->next = (element)->prev = (element)) \
-		: ((head)->prev->next = (element), (element)->prev = (head)->prev, (element)->next = (head), (head)->prev = (element)))
+static inline Entity *entity_make(int32_t x, int32_t y, int32_t z, EntityTraitFlags trait_flags) {
+	Entity *result = &pstate->entities[pstate->entity_count++];
+	result->trait = trait_flags;
+	result->position = grid_to_world(x, y, z);
 
-#define dll_push_front(head, element) (                            \
-	(head) == 0                                                    \
-		? ((head) = (element)->next = (element)->prev = (element)) \
-		: ((element)->prev = (head)->prev, (element)->next = (head), (head)->prev->next = (element), (head)->prev = (element), (head) = (element)))
+	return result;
+}
 
-#define dll_pop_front(head, popped_element) (               \
-	(head) == 0                                             \
-		? (head)                                            \
-		: ((head)->next == (head)                           \
-				  ? ((popped_element) = (head), (head) = 0) \
-				  : ((head)->prev->next = (head)->next,     \
-						(head)->next->prev = (head)->prev,  \
-						(popped_element) = (head),          \
-						(head) = (head)->next)))
+static inline uint32_t manhatten_distance(int32x3 a, int32x3 b) {
+	return abs(a.x - b.x) + abs(a.y - b.y) + abs(a.z - b.z);
+}
 
-#define dll_pop_back(head, popped_element) (                \
-	(head) == 0                                             \
-		? (head)                                            \
-		: ((head)->prev == (head)                           \
-				  ? ((popped_element) = (head), (head) = 0) \
-				  : ((head)->prev->prev->next = (head),     \
-						(popped_element) = (head)->prev,    \
-						(head)->prev = (head)->prev->prev)))
+void ensure_distance(Entity *moved, uint32_t max_distance) {
+	if (moved->next_tether_target == indexof(pstate->entities, moved))
+		return;
 
-void _astar_insert_neighbour(AStarNode *list, AStarNode *neighbour) {
-	AStarNode *itr = list;
-	bool inserted = false;
+	Entity *prev = moved;
+	Entity *curr = &pstate->entities[moved->next_tether_target];
 	do {
-		if (neighbour->g_score + neighbour->h_score < itr->g_score + itr->h_score) {
-			dll_push_front(itr, neighbour);
-			inserted = true;
-			break;
+		int32x3 prev_grid = world_to_grid(prev->position);
+		int32x3 curr_grid = world_to_grid(curr->position);
+
+		uint32_t distance = manhatten_distance(prev_grid, curr_grid);
+
+		if (curr->moving == false && distance > max_distance) {
+			int dx = prev_grid.x - curr_grid.x;
+			int dz = prev_grid.z - curr_grid.z;
+
+			Vector3 target = curr->position;
+
+			// 1. Calculate which axis the leader ('prev') moved along
+			float prev_anim_dx = fabsf(prev->move_animation.target.x - prev->move_animation.start.x);
+			float prev_anim_dz = fabsf(prev->move_animation.target.z - prev->move_animation.start.z);
+
+			bool prioritize_x = true;
+			if (prev_anim_dx == 0.0f && prev_anim_dz == 0.0f) {
+				// Fallback if the leader has no animation data: use the larger delta
+				prioritize_x = (abs(dx) <= abs(dz));
+			} else {
+				prioritize_x = (prev_anim_dx <= prev_anim_dz);
+			}
+
+			// 2. Step 1 block along the prioritized axis if a gap exists
+			if (prioritize_x) {
+				if (dx != 0) {
+					target.x += (dx > 0 ? BLOCK_SIZE : -BLOCK_SIZE);
+				} else if (dz != 0) {
+					target.z += (dz > 0 ? BLOCK_SIZE : -BLOCK_SIZE);
+				}
+			} else {
+				if (dz != 0) {
+					target.z += (dz > 0 ? BLOCK_SIZE : -BLOCK_SIZE);
+				} else if (dx != 0) {
+					target.x += (dx > 0 ? BLOCK_SIZE : -BLOCK_SIZE);
+				}
+			}
+
+			curr->move_animation.start = curr->position;
+			curr->move_animation.target = target;
+
+			float dist = Vector3Length(Vector3Subtract(curr->move_animation.target, curr->move_animation.start));
+			curr->move_animation.duration = dist / 8.0f;
+			curr->move_animation.t = 0.0f;
+			curr->moving = true;
 		}
-	} while (itr != list);
 
-	if (inserted == false)
-		dll_push_back(list, neighbour);
+		prev = curr;
+		curr = &pstate->entities[curr->next_tether_target];
+	} while (curr != moved);
 }
-
-/* int32x3 *astar_path(ArenaAllocator *arena, Vector3 start, Vector3 target) { */
-/* 	int32x3 start_grid_position = world_to_grid(start); */
-/* 	int32x3 target_grid_position = world_to_grid(target); */
-
-/* 	ArenaAllocator *scratch = &pstate->frame; */
-/* 	uint64_t scratch_mark = scratch->offset; */
-
-/* 	AStarNode *open_set = arena_push_struct(scratch, AStarNode); */
-/* 	AStarNode *closed_set = NULL; */
-
-/* 	dll_push_back(open_set, open_set); */
-/* 	open_set->g_score = 0; */
-/* 	open_set->grid_position = start_grid_position; */
-/* 	open_set->h_score = manhatten_distance(start_grid_position, target_grid_position); */
-
-/* 	while (open_set) { */
-/* 		AStarNode *current = open_set; */
-/* 		dll_pop_front(open_set, current); */
-/* 		dll_push_front(closed_set, current); */
-
-/* 		if (current->h_score == 0) */
-/* 			break; */
-
-/* 		AStarNode *neighbour_list = NULL; */
-/* 		if (current->grid_position.x > 0) { */
-/* 			int32x3 neighbour_grid_position = current->grid_position; */
-/* 			neighbour_grid_position.x -= 1; */
-
-/* 			AStarNode *neighbour = arena_push_struct(scratch, AStarNode); */
-/* 			neighbour->grid_position = neighbour_grid_position; */
-/* 			neighbour->g_score = manhatten_distance(start_grid_position, neighbour_grid_position); */
-/* 			neighbour->h_score = manhatten_distance(target_grid_position, neighbour_grid_position); */
-
-/* 			dll_push_front(neighbour_list, neighbour); */
-/* 		} */
-/* 		if (current->grid_position.x < GRID_SIZE - 1) { */
-/* 			int32x3 neighbour_grid_position = current->grid_position; */
-/* 			neighbour_grid_position.x += 1; */
-
-/* 			AStarNode *neighbour = arena_push_struct(scratch, AStarNode); */
-/* 			neighbour->grid_position = neighbour_grid_position; */
-/* 			neighbour->g_score = manhatten_distance(start_grid_position, neighbour_grid_position); */
-/* 			neighbour->h_score = manhatten_distance(target_grid_position, neighbour_grid_position); */
-
-/* 			dll_push_front(neighbour_list, neighbour); */
-/* 		} */
-/* 		if (current->grid_position.z > 0) { */
-/* 			int32x3 neighbour_grid_position = current->grid_position; */
-/* 			neighbour_grid_position.z -= 1; */
-
-/* 			AStarNode *neighbour = arena_push_struct(scratch, AStarNode); */
-/* 			neighbour->grid_position = neighbour_grid_position; */
-/* 			neighbour->g_score = manhatten_distance(start_grid_position, neighbour_grid_position); */
-/* 			neighbour->h_score = manhatten_distance(target_grid_position, neighbour_grid_position); */
-
-/* 			dll_push_front(neighbour_list, neighbour); */
-/* 		} */
-/* 		if (current->grid_position.z < GRID_SIZE - 1) { */
-/* 			int32x3 neighbour_grid_position = current->grid_position; */
-/* 			neighbour_grid_position.z += 1; */
-
-/* 			AStarNode *neighbour = arena_push_struct(scratch, AStarNode); */
-/* 			neighbour->grid_position = neighbour_grid_position; */
-/* 			neighbour->g_score = manhatten_distance(start_grid_position, neighbour_grid_position); */
-/* 			neighbour->h_score = manhatten_distance(target_grid_position, neighbour_grid_position); */
-
-/* 			dll_push_front(neighbour_list, neighbour); */
-/* 		} */
-
-/* 		AStarNode *neighbour = neighbour_list; */
-/* 		do { */
-/* 			AStarNode *closed = closed_set; */
-/* 			bool found = false; */
-/* 			do { */
-/* 				if (neighbour == closed) */
-/* 					found = true; */
-/* 			} while (closed != closed_set); */
-
-/* 			if (found) */
-/* 				continue; */
-/* 		} while (neighbour != neighbour_list); */
-/* 	} */
-/* 	int32x3 *result = NULL; */
-
-/* 	scratch->offset = scratch_mark; */
-/* 	return result; */
-/* } */
 
 void update_and_draw(GameContext *context) {
 	pstate = (PermanentState *)context->memory;
@@ -281,6 +274,14 @@ void update_and_draw(GameContext *context) {
 		pstate->frame.base = malloc(pstate->frame.capacity);
 
 		pstate->selection = LoadModelFromMesh(GenMeshCube(1.0f, 1.0f, 1.0f));
+
+		pstate->entity_count++; // 0 == invalid entity
+
+		Entity *player = entity_make(0, 0, 0, ENTITY_TRAIT_MOVABLE | ENTITY_TRAIT_BILLBOARD);
+		Entity *block0 = entity_make(0, 0, 0, ENTITY_TRAIT_DRAGGABLE);
+		Entity *block1 = entity_make(4, 0, 2, ENTITY_TRAIT_DRAGGABLE);
+		block0->next_tether_target = block0->prev_tether_target = indexof(pstate->entities, block1);
+		block1->next_tether_target = block1->prev_tether_target = indexof(pstate->entities, block0);
 
 		pstate->initialized = true;
 	}
@@ -353,6 +354,11 @@ void update_and_draw(GameContext *context) {
 		tstate->sound_effects[SOUND_EFFECT_BUTTON_PRESS] = LoadSound("assets/sound/sfx/button_press.mp3");
 		// :sound
 
+		tstate->billboard_shader = LoadShader(
+			NULL,
+			TextFormat("assets/shaders/glsl%i/billboard.fs", GLSL_VERSION));
+		// :shader
+
 		// :init
 
 		tstate->initialized = true;
@@ -399,6 +405,8 @@ void unload(GameContext *context) {
 	for (uint32_t index = 0; index < SOUND_EFFECT_MAX; ++index)
 		UnloadSound(tstate->sound_effects[index]);
 
+	UnloadShader(tstate->billboard_shader);
+
 	*mesh = (Mesh){ 0 };
 	UnloadModel(tstate->map);
 }
@@ -420,7 +428,6 @@ UIInteraction menu_button(const char *label) {
 
 	imgui_layout_begin(id, GROW(), FIT(), WIDGET_FLAG_CLICKABLE);
 	{
-		// Background shifts on state
 		Color bg = COL_BG_MID;
 		if (interact.hovering) {
 			bg = COL_BG_HOVER;
@@ -434,9 +441,8 @@ UIInteraction menu_button(const char *label) {
 			PlaySound(tstate->sound_effects[SOUND_EFFECT_BUTTON_PRESS]);
 
 		imgui_background_color(bg);
-		imgui_align_y(UI_ALIGN_CENTER);
+		imgui_anchor(IMGUI_ANCHOR_TOP);
 
-		// Left accent bar: swap color on hover, shift on press
 		uint64_t bar_id = ID(TextFormat("%s_bar", label));
 		imgui_layout_begin(bar_id, FIT(4), GROW(), 0);
 		{
@@ -445,16 +451,13 @@ UIInteraction menu_button(const char *label) {
 		}
 		imgui_layout_end();
 
-		// Nudge content down-right on press for tactile feel
 		if (interact.held)
 			imgui_offset(2, 2);
 
-		imgui_align_y(UI_ALIGN_CENTER);
-		imgui_align_x(UI_ALIGN_LEFT); // left-aligned text looks cleaner here
+		imgui_anchor(IMGUI_ANCHOR_LEFT);
 		imgui_padding_x(24);
 		imgui_padding_y(14);
 
-		// Label color brightens on hover
 		Color text_col = interact.hovering ? WHITE : COL_TEXT;
 		imgui_text(TextFormat("%s##3", label), 28, text_col);
 	}
@@ -471,41 +474,35 @@ void game_state_menu(void) {
 
 	imgui_layout_begin(hash_array("root"), FIT(GetScreenWidth()), FIT(GetScreenHeight()), 0);
 	{
-		imgui_align_x(UI_ALIGN_CENTER);
-		imgui_align_y(UI_ALIGN_CENTER);
+		imgui_anchor(IMGUI_ANCHOR_CENTER);
 		imgui_background_color(COL_BG_DARK);
 		imgui_orientation(AXIS2_Y);
 		imgui_child_gap(48);
 
-		// ── Title block ──────────────────────────────────────────────────────
 		imgui_layout_begin(hash_array("title"), FIT(), FIT(), 0);
 		{
 			imgui_orientation(AXIS2_Y);
-			imgui_align_x(UI_ALIGN_CENTER);
+			imgui_anchor(IMGUI_ANCHOR_TOP);
 			imgui_child_gap(8);
 
-			// Main title — no background, large type
 			imgui_text("GRID TACTICS", 80, WHITE);
 
-			// Thin accent rule under the title
 			imgui_layout_begin(hash_array("rule"), GROW(), FIT(2), 0);
 			{
 				imgui_background_color(COL_ACCENT);
 			}
 			imgui_layout_end();
 
-			// Subtitle / tagline
 			imgui_text("Turn-Based Strategy", 20, COL_TEXT_DIM);
 		}
 
 		imgui_layout_end();
 
-		// ── Button panel ─────────────────────────────────────────────────────
 		imgui_layout_begin(hash_array("buttons_container"), FIT(320), FIT(), 0);
 		{
 			imgui_orientation(AXIS2_Y);
 			imgui_padding_xy(20);
-			imgui_child_gap(4); // tight gaps — the bar does the visual separation
+			imgui_child_gap(4);
 
 			if (menu_button("Play").clicked)
 				pstate->state = GAME_STATE_PLAY;
@@ -524,86 +521,154 @@ void game_state_play(void) {
 	BeginMode3D(tstate->camera);
 	float time = GetTime();
 
+	// :play
 	DrawModel(tstate->map, (Vector3){ 0 }, 1.0f, WHITE);
-	if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && pstate->move_animation.duration == 0.0f) {
-		Ray ray = GetScreenToWorldRay(GetMousePosition(), tstate->camera);
 
-		float grid_half = GRID_SIZE * 0.5f;
-		float block_half = BLOCK_SIZE * 0.5f;
+	Ray camera_ray = GetScreenToWorldRay(GetMousePosition(), tstate->camera);
 
-		BoundingBox box = {
-			.min = { -grid_half * BLOCK_SIZE, -BLOCK_SIZE, -grid_half * BLOCK_SIZE },
-			.max = { grid_half * BLOCK_SIZE, 0.0f, grid_half * BLOCK_SIZE }
-		};
-		RayCollision collision = GetRayCollisionBox(ray, box);
+	bool mouse_pressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+	bool mouse_down = IsMouseButtonDown(MOUSE_LEFT_BUTTON);
 
-		if (collision.hit) {
-			TraceLog(LOG_INFO, "Hit");
+	BoundingBox map_bounding_box = box_from_size(GRID_SIZE * BLOCK_SIZE, BLOCK_SIZE, GRID_SIZE * BLOCK_SIZE);
+	map_bounding_box.max.y -= BLOCK_SIZE * 0.5f;
+	map_bounding_box.min.y -= BLOCK_SIZE * 0.5f;
 
-			int32x3 grid_pos = world_to_grid(collision.point);
+	if (pstate->last_moved)
+		ensure_distance(&pstate->entities[pstate->last_moved], 4);
 
-			/* astar_path(&pstate->frame, pstate->player_position, collision.point); */
-			TraceLog(LOG_INFO, "Grid position of hit: %d, %d, %d", grid_pos.x, grid_pos.y, grid_pos.z);
+	for (uint32_t index = 0; index < countof(pstate->entities); ++index) {
+		Entity *entity = &pstate->entities[index];
 
-			pstate->selection_position = (Vector3){
-				.x = grid_pos.x * BLOCK_SIZE + block_half,
-				.y = grid_pos.y * BLOCK_SIZE - block_half,
-				.z = grid_pos.z * BLOCK_SIZE + block_half,
-			};
+		if (entity->moving) {
+			entity->move_animation.t += GetFrameTime();
 
-			pstate->move_animation.start = pstate->player_position;
-			pstate->move_animation.target = pstate->selection_position;
-			pstate->move_animation.target.y += block_half;
+			float t = entity->move_animation.t / entity->move_animation.duration;
+			if (t >= 1.0f) {
+				t = 1.0f;
+				entity->moving = false;
+			}
 
-			float distance = Vector3Length(Vector3Subtract(pstate->move_animation.target, pstate->move_animation.start));
-			pstate->move_animation.duration = distance / 16.0f;
-			pstate->move_animation.t = 0.0f;
+			entity->position = Vector3Lerp(entity->move_animation.start, entity->move_animation.target, t);
 
-			pstate->selected = true;
+		}
+
+		else if (FLAG_GET(entity->trait, ENTITY_TRAIT_DRAGGABLE)) {
+			if (pstate->active_entity == index) {
+				int32x3 mouse_grid = world_to_grid(GetRayCollisionBox(camera_ray, map_bounding_box).point);
+				Vector3 target = grid_to_world(mouse_grid.x, mouse_grid.y, mouse_grid.z);
+
+				Vector3 difference = Vector3Subtract(entity->position, target);
+				if (fabsf(difference.x) > fabsf(difference.z))
+					target.z = entity->position.z;
+				else
+					target.x = entity->position.x;
+
+				DrawLine3D(entity->position, target, GREEN);
+			} else {
+				BoundingBox block_bounds = box_offset3v(box_from_size(1.0f, 1.0f, 1.0f), entity->position);
+				RayCollision ray_box_collision = GetRayCollisionBox(camera_ray, block_bounds);
+
+				if (ray_box_collision.hit) {
+					pstate->hot_entity = index;
+
+					if (pstate->active_entity == 0 && IsMouseButtonDown(MOUSE_LEFT_BUTTON))
+						pstate->active_entity = index;
+				}
+			}
+
+			if (pstate->active_entity == index && mouse_down == false) {
+				int32x3 mouse_grid = world_to_grid(GetRayCollisionBox(camera_ray, map_bounding_box).point);
+				Vector3 target = grid_to_world(mouse_grid.x, mouse_grid.y, mouse_grid.z);
+
+				Vector3 difference = Vector3Subtract(entity->position, target);
+				if (fabsf(difference.x) > fabsf(difference.z))
+					target.z = entity->position.z;
+				else
+					target.x = entity->position.x;
+
+				entity->move_animation.start = entity->position;
+				entity->move_animation.target = target;
+
+				float distance = Vector3Length(Vector3Subtract(entity->move_animation.target, entity->move_animation.start));
+				entity->move_animation.duration = distance / 8.0f;
+				entity->move_animation.t = 0.0f;
+
+				entity->moving = true;
+				pstate->last_moved = index;
+			}
+		} /*else if (FLAG_GET(entity->trait, ENTITY_TRAIT_MOVABLE)) { */
+		/* 	if (mouse_pressed && pstate->hot_entity == 0 && pstate->active_entity == 0) { */
+		/* 		float grid_half = GRID_SIZE * 0.5f; */
+		/* 		float block_half = BLOCK_SIZE * 0.5f; */
+
+		/* 		RayCollision ray_map_collision = GetRayCollisionBox(camera_ray, map_bounding_box); */
+
+		/* 		if (ray_map_collision.hit) { */
+		/* 			int32x3 grid_pos = world_to_grid(ray_map_collision.point); */
+
+		/* 			TraceLog(LOG_INFO, "Grid position of hit: %d, %d, %d", grid_pos.x, grid_pos.y, grid_pos.z); */
+
+		/* 			pstate->selection_position = (Vector3){ */
+		/* 				.x = grid_pos.x * BLOCK_SIZE + block_half, */
+		/* 				.y = grid_pos.y * BLOCK_SIZE - block_half, */
+		/* 				.z = grid_pos.z * BLOCK_SIZE + block_half, */
+		/* 			}; */
+
+		/* 			entity->move_animation.start = entity->position; */
+		/* 			entity->move_animation.target = pstate->selection_position; */
+		/* 			entity->move_animation.target.y += block_half; */
+
+		/* 			float distance = Vector3Length(Vector3Subtract(entity->move_animation.target, entity->move_animation.start)); */
+		/* 			entity->move_animation.duration = distance / 8.0f; */
+		/* 			entity->move_animation.t = 0.0f; */
+
+		/* 			entity->moving = true; */
+		/* 		} */
+		/* 	} */
+		/* } */
+	}
+
+	for (uint32_t index = 1; index < pstate->entity_count; ++index) {
+		Entity entity = pstate->entities[index];
+
+		if (FLAG_GET(entity.trait, ENTITY_TRAIT_BILLBOARD)) {
+			BeginShaderMode(tstate->billboard_shader);
+			DrawBillboardPro(tstate->camera, tstate->atlas, sprite_to_uv_rect[SPRITE_PLAYER], entity.position, tstate->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
+			EndShaderMode();
 		} else {
-			TraceLog(LOG_INFO, "No Hit");
-			pstate->selected = false;
+			Color box_color = RED;
+			if (pstate->hot_entity == index)
+				box_color = GREEN;
+			if (pstate->active_entity == index)
+				box_color = DARKGREEN;
+
+			DrawCubeV(entity.position, vec3(BLOCK_SIZE), box_color);
 		}
 	}
 
-	if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
-		pstate->selected = false;
-	}
+	/* if (pstate->selected) { */
+	/* 	Vector3 pos = pstate->selection_position; */
 
-	if (pstate->move_animation.duration > 0.0f) {
-		pstate->move_animation.t += GetFrameTime();
+	/* 	pos.y += (BLOCK_SIZE * 0.5f) + (BLOCK_SIZE * 0.05f); */
 
-		float t = pstate->move_animation.t / pstate->move_animation.duration;
-		if (t >= 1.0f) {
-			t = 1.0f;
-			pstate->move_animation.duration = 0.0f;
-		}
+	/* 	Vector3 mesh_scale = Vector3Scale((Vector3){ 0.1f, 0.05f, 0.3f }, BLOCK_SIZE); */
+	/* 	Color selection_color = WHITE; */
 
-		pstate->player_position = Vector3Lerp(pstate->move_animation.start, pstate->move_animation.target, t);
-		DrawBillboardPro(tstate->camera, tstate->atlas, sprite_to_uv_rect[SPRITE_PLAYER], pstate->player_position, tstate->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
-
-	} else {
-		DrawBillboardPro(tstate->camera, tstate->atlas, sprite_to_uv_rect[SPRITE_PLAYER], pstate->player_position, tstate->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
-	}
-
-	if (pstate->selected) {
-		Vector3 pos = pstate->selection_position;
-
-		pos.y += (BLOCK_SIZE * 0.5f) + (BLOCK_SIZE * 0.05f);
-
-		Vector3 mesh_scale = Vector3Scale((Vector3){ 0.1f, 0.05f, 0.3f }, BLOCK_SIZE);
-		Color selection_color = WHITE;
-
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color);
-		DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color);
-	}
-	DrawBillboardPro(tstate->camera, tstate->atlas, sprite_to_uv_rect[SPRITE_PLAYER], pstate->player_position, tstate->camera.up, (Vector2){ BLOCK_SIZE, BLOCK_SIZE }, (Vector2){ BLOCK_SIZE * 0.5f, 0.0f }, 0.0f, WHITE);
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.4f, 0.0f, 0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, 90.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ 0.5f, 0.0f, -0.4f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -180.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.4f, 0.0f, -0.5f }, BLOCK_SIZE)), (Vector3){ 0.0f, 1.0f, 0.0f }, -90.0f, mesh_scale, selection_color); */
+	/* 	DrawModelEx(pstate->selection, Vector3Add(pos, Vector3Scale((Vector3){ -0.5f, 0.0f, 0.4f }, BLOCK_SIZE)), (Vector3){ 0 }, 0.0f, mesh_scale, selection_color); */
+	/* } */
 
 	EndMode3D();
+
+	pstate->hot_entity = 0;
+	if (pstate->active_entity && IsMouseButtonDown(MOUSE_LEFT_BUTTON) == false)
+		pstate->active_entity = 0;
+	else if (pstate->active_entity == false && IsMouseButtonDown(MOUSE_LEFT_BUTTON) == true)
+		pstate->active_entity = (uint32_t)-1;
 }

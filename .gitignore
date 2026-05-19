@@ -4,8 +4,6 @@
 /obj/
 /out/
 /vendor/
-**/shaders/
-
 
 # Ignore CMake files (if using CMake)
 CMakeFiles/

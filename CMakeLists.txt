@@ -77,6 +77,7 @@ else()
     target_include_directories(game PRIVATE "./src/" "./src/game/")
     target_compile_options(game PRIVATE -Wall -pedantic -Wextra -Werror
         -Wno-unused-parameter -Wno-unused-variable -Wno-override-init)
+    target_compile_definitions(game PRIVATE PLATFORM_DESKTOP)
 
     if(EXISTS "${CMAKE_SOURCE_DIR}/assets")
         set(ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
